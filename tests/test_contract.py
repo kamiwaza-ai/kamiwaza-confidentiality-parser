@@ -343,6 +343,51 @@ def test_wrong_provider_contract_rejected(monkeypatch, change):
         load_provider(enabled=True, provider="external:factory")
 
 
+@pytest.mark.parametrize("kind", ["marking", "profile"])
+def test_accepted_nested_json_exports_are_detached(kind):
+    values = {"label": "Public"}
+    for _ in range(600):
+        values = [values]
+    mapping = {"values": values}
+    if kind == "marking":
+        value = NormalizedMarking("profile", "1", "level", attributes=mapping)
+        field = "attributes"
+    else:
+        value = Profile("profile", "1", [Level("level", "Level", 0)], identity=mapping)
+        field = "identity"
+
+    exported = value.to_dict()
+    restored = type(value).from_dict(exported)
+    original_leaf = getattr(value, field)["values"]
+    exported_leaf = exported[field]["values"]
+    restored_leaf = getattr(restored, field)["values"]
+    for _ in range(600):
+        original_leaf = original_leaf[0]
+        exported_leaf = exported_leaf[0]
+        restored_leaf = restored_leaf[0]
+    assert original_leaf == exported_leaf == restored_leaf == {"label": "Public"}
+    exported_leaf["label"] = "Internal"
+    assert original_leaf == restored_leaf == {"label": "Public"}
+
+
+@pytest.mark.parametrize("kind", ["marking", "profile"])
+@pytest.mark.parametrize("invalid", [object(), float("nan"), {1: "Public"}])
+def test_invalid_nested_json_export_raises_typed_error(kind, invalid):
+    if kind == "marking":
+        value = NormalizedMarking("profile", "1", "level", attributes={"values": []})
+        mapping = value.attributes
+        error = MarkingError
+    else:
+        value = Profile(
+            "profile", "1", [Level("level", "Level", 0)], identity={"values": []}
+        )
+        mapping = value.identity
+        error = ConfigurationError
+    mapping["values"].append({"nested": [invalid]})
+    with pytest.raises(error):
+        value.to_dict()
+
+
 def test_deep_json_values_raise_typed_errors():
     import sys
 

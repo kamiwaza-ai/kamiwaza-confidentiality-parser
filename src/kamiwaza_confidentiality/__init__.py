@@ -8,7 +8,6 @@ import os
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from importlib.resources import files
 from pathlib import Path
@@ -182,13 +181,17 @@ class Profile:
         return self.level(value).rank
 
     def to_dict(self) -> dict[str, Any]:
+        try:
+            identity = _json_mapping(self.identity, "identity")
+        except MarkingError as exc:
+            raise ConfigurationError(str(exc)) from exc
         return {
             "contract_version": CONTRACT_VERSION,
             "id": self.id,
             "revision": self.revision,
             "levels": [level.to_dict() for level in self.levels],
             "defaults": dict(self.defaults),
-            "identity": deepcopy(dict(self.identity)),
+            "identity": identity,
         }
 
     @classmethod
@@ -231,7 +234,13 @@ class NormalizedMarking:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "profile_id": self.profile_id,
+            "profile_revision": self.profile_revision,
+            "level_id": self.level_id,
+            "raw_text": self.raw_text,
+            "attributes": _json_mapping(self.attributes, "attributes"),
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> NormalizedMarking:
