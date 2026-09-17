@@ -341,3 +341,84 @@ def test_wrong_provider_contract_rejected(monkeypatch, change):
     )
     with pytest.raises(ConfigurationError):
         load_provider(enabled=True, provider="external:factory")
+
+
+def test_deep_json_values_raise_typed_errors():
+    import sys
+
+    values = []
+    for _ in range(max(20_000, sys.getrecursionlimit() * 2)):
+        values = [values]
+    attributes = {"values": values}
+    with pytest.raises(MarkingError, match="JSON values"):
+        NormalizedMarking("profile", "1", "level", attributes=attributes)
+    with pytest.raises(MarkingError, match="JSON values"):
+        NormalizedMarking.from_dict(
+            {
+                "profile_id": "profile",
+                "profile_revision": "1",
+                "level_id": "level",
+                "attributes": attributes,
+            }
+        )
+    with pytest.raises(ConfigurationError, match="JSON values"):
+        Profile("profile", "1", [Level("level", "Level", 0)], identity=attributes)
+
+
+def test_deep_yaml_raises_configuration_error(tmp_path):
+    import sys
+
+    depth = sys.getrecursionlimit() + 100
+    path = tmp_path / "profile.yaml"
+    path.write_text("identity: " + "[" * depth + "0" + "]" * depth)
+    with pytest.raises(ConfigurationError, match="Unable to load marking profile"):
+        create_provider(path)
+
+
+def test_top_level_mapping_is_snapshotted_once_before_validation():
+    from collections.abc import Mapping
+
+    class OneReadMapping(Mapping):
+        def __init__(self):
+            self.iterations = 0
+            self.reads = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            assert self.iterations == 1, "Mapping was materialized again"
+            return iter(["label"])
+
+        def __getitem__(self, key):
+            self.reads += 1
+            assert self.reads == 1, "Mapping value was read again"
+            return ["Public"]
+
+        def __len__(self):
+            return 1
+
+    value = OneReadMapping()
+    marking = NormalizedMarking("profile", "1", "level", attributes=value)
+    assert marking.attributes == {"label": ["Public"]}
+    assert (value.iterations, value.reads) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    "label,query", [("Café", " CAFE\u0301 "), ("Straße", "STRASSE")]
+)
+def test_canonical_unicode_alias_matching_preserves_text(label, query):
+    provider = ConfiguredProvider(Profile("profile", "1", [Level("level", label, 0)]))
+    marking = provider.parse(query)
+    assert marking.level_id == "level"
+    assert marking.raw_text == query
+    assert provider.present(marking).text == label
+    assert provider.profile.to_dict()["levels"][0]["name"] == label
+
+
+@pytest.mark.parametrize("alias", ["Cafe\u0301", " CAFE\u0301 "])
+def test_canonically_equivalent_aliases_cannot_select_different_levels(alias):
+    with pytest.raises(ConfigurationError, match="Ambiguous"):
+        Profile(
+            "profile",
+            "1",
+            [Level("one", "Café", 0), Level("two", "Other", 1, aliases=(alias,))],
+        )

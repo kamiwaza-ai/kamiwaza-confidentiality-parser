@@ -34,7 +34,9 @@ missing/incompatible provider never silently falls back. A disabled provider
 returns None and does not import optional code. The host must reject operations
 on already-marked resources if no compatible provider is enabled.
 
-`Profile.level(value)` resolves stable IDs, names or aliases case-insensitively;
+`Profile.level(value)` resolves stable IDs, names or aliases after whitespace
+trimming, Unicode NFC normalization and casefolding; the same normalization
+detects ambiguous aliases across levels. Original labels and raw text are retained.
 `Profile.rank(value)` returns configured rank. Assignment must reject a level
 whose `assignable` is false; presentation-only levels remain listed. Changing
 labels/colors does not change stable IDs. Changing policy semantics requires a
@@ -49,6 +51,8 @@ Stable profile and level IDs use `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` so they can
 serve as portable resource references. Human names and aliases are separate.
 Mappings are defensively copied on construction; frozen dataclasses prevent
 field reassignment, but callers should still treat nested data as read-only.
+Mapping-bearing `Profile` and `NormalizedMarking` values are not promised
+hashable; use explicit stable IDs or serialized envelopes for indexing.
 
 An unset or whitespace-only enable flag leaves marking support disabled. Once
 enabled, an explicitly empty provider is a configuration error; only an absent

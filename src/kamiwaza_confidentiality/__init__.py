@@ -6,6 +6,7 @@ import importlib
 import json
 import os
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -33,6 +34,13 @@ def _text(value: Any, name: str) -> str:
     if any(ord(c) < 32 for c in value):
         raise ConfigurationError(f"{name} must not contain control characters")
     return value
+
+
+def _alias_key(value: str) -> str:
+    """Compare configured labels consistently without changing stored text."""
+    return unicodedata.normalize(
+        "NFC", unicodedata.normalize("NFC", value.strip()).casefold()
+    )
 
 
 def _identifier(value: Any, name: str) -> str:
@@ -70,11 +78,14 @@ def _validate_json_keys(value: Mapping[str, Any], name: str) -> None:
 def _json_mapping(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise MarkingError(f"{name} must be an object with string keys")
-    _validate_json_keys(value, name)
     try:
-        encoded = json.dumps(dict(value), allow_nan=False)
+        snapshot = dict(value)
+        _validate_json_keys(snapshot, name)
+        encoded = json.dumps(snapshot, allow_nan=False)
         return json.loads(encoded)
-    except (TypeError, ValueError) as exc:
+    except MarkingError:
+        raise
+    except (TypeError, ValueError, RecursionError) as exc:
         raise MarkingError(f"{name} must contain JSON values") from exc
 
 
@@ -134,7 +145,7 @@ class Profile:
             ids.add(level.id)
             ranks.add(level.rank)
             for alias in (level.id, level.name, *level.aliases):
-                key = alias.strip().casefold()
+                key = _alias_key(alias)
                 if key in seen and seen[key] != level.id:
                     raise ConfigurationError(f"Ambiguous level name or alias: {alias}")
                 seen[key] = level.id
@@ -161,11 +172,9 @@ class Profile:
     def level(self, value: str) -> Level:
         if not isinstance(value, str) or not value.strip():
             raise MarkingError("A nonempty configured level is required")
-        key = value.strip().casefold()
+        key = _alias_key(value)
         for level in self.levels:
-            if key in {
-                s.strip().casefold() for s in (level.id, level.name, *level.aliases)
-            }:
+            if key in {_alias_key(s) for s in (level.id, level.name, *level.aliases)}:
                 return level
         raise MarkingError(f"Unknown level: {value}")
 
@@ -346,7 +355,7 @@ def create_provider(
         return ConfiguredProvider(Profile.from_dict(document))
     except ConfigurationError:
         raise
-    except (OSError, yaml.YAMLError, TypeError, ValueError) as exc:
+    except (OSError, yaml.YAMLError, TypeError, ValueError, RecursionError) as exc:
         raise ConfigurationError(f"Unable to load marking profile: {exc}") from exc
 
 
