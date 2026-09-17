@@ -214,8 +214,39 @@ def test_nested_envelope_attributes_detached_from_caller():
     assert marking.attributes == {"labels": ["one"]}
 
 
+@pytest.mark.parametrize("key", [1, True, None, 1.5, ("key",)])
+@pytest.mark.parametrize("depth", ["object", "array", "nested"])
+def test_nested_non_string_object_keys_rejected(key, depth):
+    invalid = {key: "original", str(key): "collision"}
+    attributes = {
+        "object": {"values": invalid},
+        "array": {"values": [invalid]},
+        "nested": {"values": [{"deeper": [[invalid]]}]},
+    }[depth]
+    with pytest.raises(MarkingError, match="string keys"):
+        NormalizedMarking("profile", "1", "level", attributes=attributes)
+    with pytest.raises(ConfigurationError, match="string keys"):
+        Profile("profile", "1", [Level("level", "Level", 0)], identity=attributes)
+
+
+def test_nested_json_attributes_preserved_and_detached():
+    attributes = {"values": [{"1": [None, True, 1, 1.5, {"label": "one"}]}]}
+    marking = NormalizedMarking("profile", "1", "level", attributes=attributes)
+    assert marking.attributes == attributes
+    attributes["values"][0]["1"][-1]["label"] = "two"
+    assert marking.attributes["values"][0]["1"][-1] == {"label": "one"}
+
+
+def test_circular_attributes_rejected():
+    attributes = {"values": []}
+    attributes["values"].append(attributes)
+    with pytest.raises(MarkingError, match="JSON values"):
+        NormalizedMarking("profile", "1", "level", attributes=attributes)
+
+
 def test_provider_with_noncallable_methods_is_incompatible(monkeypatch):
     import types
+
     import kamiwaza_confidentiality as package
 
     fake_provider = types.SimpleNamespace(
@@ -230,3 +261,83 @@ def test_provider_with_noncallable_methods_is_incompatible(monkeypatch):
     monkeypatch.setattr(package.importlib, "import_module", lambda name: module)
     with pytest.raises(ConfigurationError):
         load_provider(enabled=True, provider="fake:factory")
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_empty_enable_flag_stays_disabled(value):
+    assert load_from_env({"KAMIWAZA_MARKINGS_ENABLED": value}) is None
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_enabled_empty_provider_is_explicit_error(value):
+    with pytest.raises(ConfigurationError, match="nonempty provider"):
+        load_from_env(
+            {"KAMIWAZA_MARKINGS_ENABLED": "true", "KAMIWAZA_MARKINGS_PROVIDER": value}
+        )
+
+
+def test_profile_bad_encoding_is_configuration_error(tmp_path):
+    path = tmp_path / "bad.yaml"
+    path.write_bytes(b"\xff")
+    with pytest.raises(ConfigurationError, match="Unable to load marking profile"):
+        create_provider(path)
+
+
+def test_profile_null_path_is_configuration_error():
+    with pytest.raises(ConfigurationError, match="Unable to load marking profile"):
+        create_provider("/bad\0.yaml")
+
+
+def test_profile_export_detaches_nested_identity():
+    profile = Profile(
+        "profile",
+        "1",
+        [Level("level", "Level", 0)],
+        identity={"claims": [{"names": ["one"]}]},
+    )
+    exported = profile.to_dict()
+    exported["identity"]["claims"][0]["names"].append("two")
+    assert profile.identity == {"claims": [{"names": ["one"]}]}
+
+
+def test_dynamic_provider_contract_loaded_consistently(monkeypatch):
+    import types
+
+    import kamiwaza_confidentiality as package
+
+    delegate = create_provider()
+
+    class DynamicProvider:
+        def __init__(self):
+            self.delegate = delegate
+
+        def __getattr__(self, name):
+            return getattr(self.delegate, name)
+
+    monkeypatch.setattr(
+        package.importlib,
+        "import_module",
+        lambda name: types.SimpleNamespace(factory=lambda profile: DynamicProvider()),
+    )
+    provider = load_provider(enabled=True, provider="external:factory")
+    marking = provider.validate(provider.parse("private"))
+    assert provider.present(marking).text == "Company Private"
+    assert provider.compose([marking]).text == "Company Private"
+
+
+@pytest.mark.parametrize("change", [{"contract_version": 2}, {"profile": {}}])
+def test_wrong_provider_contract_rejected(monkeypatch, change):
+    import types
+
+    import kamiwaza_confidentiality as package
+
+    provider = create_provider()
+    for name, value in change.items():
+        setattr(provider, name, value)
+    monkeypatch.setattr(
+        package.importlib,
+        "import_module",
+        lambda name: types.SimpleNamespace(factory=lambda profile: provider),
+    )
+    with pytest.raises(ConfigurationError):
+        load_provider(enabled=True, provider="external:factory")

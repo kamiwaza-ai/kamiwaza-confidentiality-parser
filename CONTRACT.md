@@ -1,8 +1,9 @@
 # Marking provider contract v1
 
 Distribution `kamiwaza-confidentiality-parser`, import `kamiwaza_confidentiality`.
-Python 3.10+. All contract objects are frozen dataclasses; persistence uses their
-`to_dict()` / `from_dict()` methods, not provider-specific Python classes.
+Python 3.10+. All contract objects are frozen dataclasses. Persist profiles and
+marking envelopes with their `to_dict()` / `from_dict()` methods, not
+provider-specific Python classes. Levels and displays expose `to_dict()` only.
 
 - `Level(id, name, rank, aliases=(), background_color="#64748b", foreground_color="#ffffff", assignable=True)`
 - `Profile(id, revision, levels, defaults={}, identity={})`. `levels` is a tuple of
@@ -48,3 +49,16 @@ Stable profile and level IDs use `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` so they can
 serve as portable resource references. Human names and aliases are separate.
 Mappings are defensively copied on construction; frozen dataclasses prevent
 field reassignment, but callers should still treat nested data as read-only.
+
+An unset or whitespace-only enable flag leaves marking support disabled. Once
+enabled, an explicitly empty provider is a configuration error; only an absent
+provider setting selects the reference factory.
+
+Provider factories are trusted Python code selected by the deployment
+administrator. Loading imports their module and invokes the factory before
+validating the resulting object; this is not a sandbox or an authorization
+boundary. Never derive the provider selector from untrusted request input.
+The loader checks attributes and callable methods directly, consistently across
+supported Python versions, including providers exposing members dynamically.
+Providers must return this distribution's `Profile` class and depend on a
+compatible version of `kamiwaza-confidentiality-parser`.

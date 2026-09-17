@@ -6,10 +6,12 @@ import importlib
 import json
 import os
 import re
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import yaml
 
@@ -49,9 +51,26 @@ def _color(value: Any) -> str:
     return value
 
 
+def _validate_json_keys(value: Mapping[str, Any], name: str) -> None:
+    pending: list[Any] = [value]
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop()
+        if not isinstance(item, (Mapping, list, tuple)) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, Mapping):
+            if any(not isinstance(key, str) for key in item):
+                raise MarkingError(f"{name} must contain objects with string keys")
+            pending.extend(item.values())
+        else:
+            pending.extend(item)
+
+
 def _json_mapping(value: Any, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or any(not isinstance(k, str) for k in value):
+    if not isinstance(value, Mapping):
         raise MarkingError(f"{name} must be an object with string keys")
+    _validate_json_keys(value, name)
     try:
         encoded = json.dumps(dict(value), allow_nan=False)
         return json.loads(encoded)
@@ -160,7 +179,7 @@ class Profile:
             "revision": self.revision,
             "levels": [level.to_dict() for level in self.levels],
             "defaults": dict(self.defaults),
-            "identity": dict(self.identity),
+            "identity": deepcopy(dict(self.identity)),
         }
 
     @classmethod
@@ -325,7 +344,9 @@ def create_provider(
                 raise ConfigurationError("Profile path must be an absolute local path")
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
         return ConfiguredProvider(Profile.from_dict(document))
-    except (OSError, yaml.YAMLError, TypeError) as exc:
+    except ConfigurationError:
+        raise
+    except (OSError, yaml.YAMLError, TypeError, ValueError) as exc:
         raise ConfigurationError(f"Unable to load marking profile: {exc}") from exc
 
 
@@ -339,12 +360,13 @@ def load_provider(
         raise ConfigurationError("enabled must be boolean")
     if not enabled:
         return None
+    if not isinstance(provider, str) or not provider.strip():
+        raise ConfigurationError("Enabled markings require a nonempty provider")
     try:
         module, factory = provider.split(":")
         instance = getattr(importlib.import_module(module), factory)(profile)
         if (
-            not isinstance(instance, MarkingProvider)
-            or type(instance.contract_version) is not int
+            type(getattr(instance, "contract_version", None)) is not int
             or instance.contract_version != CONTRACT_VERSION
             or not all(
                 callable(getattr(instance, method, None))
@@ -352,7 +374,7 @@ def load_provider(
             )
         ):
             raise ConfigurationError("Incompatible marking provider contract")
-        if not isinstance(instance.profile, Profile):
+        if not isinstance(getattr(instance, "profile", None), Profile):
             raise ConfigurationError(
                 "Provider profile must implement the neutral Profile contract"
             )
@@ -368,7 +390,7 @@ def load_provider(
 def load_from_env(environ: Mapping[str, str] | None = None) -> MarkingProvider | None:
     env = os.environ if environ is None else environ
     enabled = env.get("KAMIWAZA_MARKINGS_ENABLED", "false").strip().casefold()
-    if enabled not in {"true", "false", "1", "0"}:
+    if enabled not in {"", "true", "false", "1", "0"}:
         raise ConfigurationError("KAMIWAZA_MARKINGS_ENABLED must be true or false")
     return load_provider(
         enabled=enabled in {"true", "1"},
