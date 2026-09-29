@@ -12,7 +12,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from importlib.resources import files
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 import yaml
@@ -44,6 +43,28 @@ def _alias_key(value: str) -> str:
     return unicodedata.normalize(
         "NFC", unicodedata.normalize("NFC", value.strip()).casefold()
     )
+
+
+class _ReadOnlyDict(dict):
+    """A dict that rejects mutation, so validated values stay validated.
+
+    Subclassing dict keeps json, dataclasses.asdict, copy and pickle working.
+    """
+
+    def _readonly(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError("This mapping is read-only")
+
+    __setitem__ = __delitem__ = __ior__ = _readonly
+    clear = pop = popitem = setdefault = update = _readonly
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (dict(self),))
+
+    def __copy__(self) -> _ReadOnlyDict:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _ReadOnlyDict:
+        return self
 
 
 def _tuple(
@@ -181,20 +202,13 @@ class Profile:
                 )
         # Read-only view, like the tuple-valued fields: defaults are validated
         # once here, so later mutation must not bypass that validation.
-        object.__setattr__(self, "defaults", MappingProxyType(dict(self.defaults)))
+        object.__setattr__(self, "defaults", _ReadOnlyDict(self.defaults))
         try:
             object.__setattr__(
                 self, "identity", _json_mapping(self.identity, "identity")
             )
         except MarkingError as exc:
             raise ConfigurationError(str(exc)) from exc
-
-    def __reduce__(self) -> tuple[Any, ...]:
-        # MappingProxyType is not picklable; rebuild (and revalidate) instead.
-        return (
-            type(self),
-            (self.id, self.revision, self.levels, dict(self.defaults), self.identity),
-        )
 
     def level(self, value: str) -> Level:
         if not isinstance(value, str) or not value.strip():

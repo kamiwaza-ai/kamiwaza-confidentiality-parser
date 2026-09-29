@@ -493,20 +493,35 @@ def test_profile_defaults_are_read_only_after_validation():
     )
     source["document"] = "hidden"
     assert profile.defaults == {"document": "shared"}
-    with pytest.raises(TypeError):
-        profile.defaults["document"] = "hidden"
+    for mutate in (
+        lambda d: d.__setitem__("document", "hidden"),
+        lambda d: d.update(document="hidden"),
+        lambda d: d.setdefault("site", "hidden"),
+        lambda d: d.pop("document"),
+        lambda d: d.clear(),
+    ):
+        with pytest.raises(TypeError, match="read-only"):
+            mutate(profile.defaults)
+    with pytest.raises(TypeError, match="read-only"):
+        profile.defaults |= {"document": "hidden"}
+    assert profile.defaults == {"document": "shared"}
     assert profile.to_dict()["defaults"] == {"document": "shared"}
     assert Profile.from_dict(profile.to_dict()) == profile
     assert replace(profile, revision="2").defaults == {"document": "shared"}
 
 
-def test_profile_with_read_only_defaults_pickles_and_copies():
+def test_read_only_defaults_still_pickle_copy_and_serialize():
     import copy
     import pickle
+
+    from dataclasses import asdict
 
     profile = create_provider().profile
     assert pickle.loads(pickle.dumps(profile)) == profile
     assert copy.deepcopy(profile) == profile
+    assert copy.deepcopy(profile.defaults) == profile.defaults
+    assert asdict(profile)["defaults"] == dict(profile.defaults)
+    assert json.loads(json.dumps(profile.defaults)) == dict(profile.defaults)
 
 
 @pytest.mark.parametrize(
