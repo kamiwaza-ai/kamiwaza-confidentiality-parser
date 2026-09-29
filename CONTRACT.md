@@ -8,7 +8,8 @@ provider-specific Python classes. Levels and displays expose `to_dict()` only.
 - `Level(id, name, rank, aliases=(), background_color="#64748b", foreground_color="#ffffff", assignable=True)`
 - `Profile(id, revision, levels, defaults={}, identity={})`. `levels` is a tuple of
   Level objects. `defaults` maps operation names (e.g. `document`, `source`,
-  `subject`, `site`) to stable level IDs. `identity` holds provider configuration;
+  `subject`, `site`) to stable level IDs and is exposed as a read-only mapping
+  after validation. `identity` holds provider configuration;
   the trusted claim boundary and graph writes belong to the host.
 - `NormalizedMarking(profile_id, profile_revision, level_id, raw_text="", attributes={})`
 - `Display(text, background_color, foreground_color)` (plain text, hex colors).
@@ -26,10 +27,14 @@ provider-specific Python classes. Levels and displays expose `to_dict()` only.
 - `load_provider(*, enabled: bool, provider: str = "kamiwaza_confidentiality:create_provider", profile: str | Path | Mapping | None = None) -> MarkingProvider | None`.
 - `load_from_env(environ: Mapping[str, str] | None = None)`: disabled unless
   `KAMIWAZA_MARKINGS_ENABLED=true`; provider from `KAMIWAZA_MARKINGS_PROVIDER`;
-  optional absolute local profile from `KAMIWAZA_MARKINGS_PROFILE`.
+  optional absolute local profile from `KAMIWAZA_MARKINGS_PROFILE`. An empty
+  profile value is treated as unset (deployment templates render it empty to
+  clear an earlier value): the provider uses its default profile and, when
+  markings are enabled, a warning names the selected profile id and revision.
 
 Errors: `MarkingError(ValueError)` for bad assignments/envelopes;
-`ConfigurationError(ValueError)` for bad profiles/provider loading. An enabled,
+`ConfigurationError(ValueError)` for bad profiles/provider loading, including
+direct `Level`/`Profile` construction with wrongly typed fields. An enabled,
 missing/incompatible provider never silently falls back. A disabled provider
 returns None and does not import optional code. The host must reject operations
 on already-marked resources if no compatible provider is enabled.

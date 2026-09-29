@@ -467,3 +467,73 @@ def test_canonically_equivalent_aliases_cannot_select_different_levels(alias):
             "1",
             [Level("one", "Café", 0), Level("two", "Other", 1, aliases=(alias,))],
         )
+
+
+@pytest.mark.parametrize("wrap", [iter, lambda items: (item for item in items)])
+def test_compose_accepts_one_shot_iterables(wrap):
+    provider = create_provider()
+    markings = [provider.parse("public"), provider.parse("confidential")]
+    assert provider.compose(wrap(markings)).text == "Company Confidential"
+    assert provider.compose(wrap([])) is None
+
+
+def test_compose_rejects_non_iterable_with_marking_error():
+    provider = create_provider()
+    with pytest.raises(MarkingError, match="sequence of normalized markings"):
+        provider.compose(provider.parse("public"))
+
+
+def test_profile_defaults_are_read_only_after_validation():
+    source = {"document": "shared"}
+    profile = Profile(
+        "profile",
+        "1",
+        [Level("shared", "Shared", 0), Level("hidden", "Hidden", 1, assignable=False)],
+        defaults=source,
+    )
+    source["document"] = "hidden"
+    assert profile.defaults == {"document": "shared"}
+    with pytest.raises(TypeError):
+        profile.defaults["document"] = "hidden"
+    assert profile.to_dict()["defaults"] == {"document": "shared"}
+    assert Profile.from_dict(profile.to_dict()) == profile
+    assert replace(profile, revision="2").defaults == {"document": "shared"}
+
+
+def test_profile_with_read_only_defaults_pickles_and_copies():
+    import copy
+    import pickle
+
+    profile = create_provider().profile
+    assert pickle.loads(pickle.dumps(profile)) == profile
+    assert copy.deepcopy(profile) == profile
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: Level("level", "Level", 0, aliases=5),
+        lambda: Profile("profile", "1", 5),
+        lambda: Profile("profile", "1", None),
+    ],
+)
+def test_direct_construction_with_bad_types_is_configuration_error(build):
+    with pytest.raises(ConfigurationError, match="must be a sequence"):
+        build()
+
+
+def test_empty_profile_selects_default_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="kamiwaza_confidentiality"):
+        provider = load_from_env(
+            {"KAMIWAZA_MARKINGS_ENABLED": "true", "KAMIWAZA_MARKINGS_PROFILE": ""}
+        )
+    assert provider.profile == create_provider().profile
+    assert "KAMIWAZA_MARKINGS_PROFILE is set but empty" in caplog.text
+    assert repr(provider.profile.id) in caplog.text
+
+
+def test_unset_or_disabled_empty_profile_does_not_warn(caplog):
+    with caplog.at_level("WARNING", logger="kamiwaza_confidentiality"):
+        assert load_from_env({"KAMIWAZA_MARKINGS_ENABLED": "true"}) is not None
+        assert load_from_env({"KAMIWAZA_MARKINGS_PROFILE": ""}) is None
+    assert caplog.text == ""

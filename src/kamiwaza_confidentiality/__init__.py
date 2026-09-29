@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -11,12 +12,15 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from importlib.resources import files
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 import yaml
 
 CONTRACT_VERSION = 1
 __version__ = "0.1.0"
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MarkingError(ValueError):
@@ -40,6 +44,15 @@ def _alias_key(value: str) -> str:
     return unicodedata.normalize(
         "NFC", unicodedata.normalize("NFC", value.strip()).casefold()
     )
+
+
+def _tuple(
+    value: Any, message: str, error: type[ValueError] = ConfigurationError
+) -> tuple[Any, ...]:
+    try:
+        return tuple(value)
+    except TypeError as exc:
+        raise error(message) from exc
 
 
 def _identifier(value: Any, name: str) -> str:
@@ -107,7 +120,9 @@ class Level:
             raise ConfigurationError("Level assignable must be boolean")
         if isinstance(self.aliases, str):
             raise ConfigurationError("Level aliases must be a sequence")
-        object.__setattr__(self, "aliases", tuple(self.aliases))
+        object.__setattr__(
+            self, "aliases", _tuple(self.aliases, "Level aliases must be a sequence")
+        )
         for alias in self.aliases:
             _text(alias, "Level alias")
         _color(self.background_color)
@@ -130,7 +145,11 @@ class Profile:
     def __post_init__(self) -> None:
         _identifier(self.id, "Profile id")
         _text(self.revision, "Profile revision")
-        object.__setattr__(self, "levels", tuple(self.levels))
+        object.__setattr__(
+            self,
+            "levels",
+            _tuple(self.levels, "Profile levels must be a sequence of Level objects"),
+        )
         if not self.levels or not all(
             isinstance(level, Level) for level in self.levels
         ):
@@ -160,13 +179,22 @@ class Profile:
                 raise ConfigurationError(
                     f"Unknown or nonassignable default level: {value}"
                 )
-        object.__setattr__(self, "defaults", dict(self.defaults))
+        # Read-only view, like the tuple-valued fields: defaults are validated
+        # once here, so later mutation must not bypass that validation.
+        object.__setattr__(self, "defaults", MappingProxyType(dict(self.defaults)))
         try:
             object.__setattr__(
                 self, "identity", _json_mapping(self.identity, "identity")
             )
         except MarkingError as exc:
             raise ConfigurationError(str(exc)) from exc
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # MappingProxyType is not picklable; rebuild (and revalidate) instead.
+        return (
+            type(self),
+            (self.id, self.revision, self.levels, dict(self.defaults), self.identity),
+        )
 
     def level(self, value: str) -> Level:
         if not isinstance(value, str) or not value.strip():
@@ -335,6 +363,10 @@ class ConfiguredProvider:
         *,
         context: Mapping[str, Any] | None = None,
     ) -> Display | None:
+        # Snapshot once so one-shot iterables are not exhausted by validation.
+        markings = _tuple(
+            markings, "compose expects a sequence of normalized markings", MarkingError
+        )
         for marking in markings:
             self._level(marking)
             if marking.attributes:
@@ -410,10 +442,24 @@ def load_from_env(environ: Mapping[str, str] | None = None) -> MarkingProvider |
     enabled = env.get("KAMIWAZA_MARKINGS_ENABLED", "false").strip().casefold()
     if enabled not in {"", "true", "false", "1", "0"}:
         raise ConfigurationError("KAMIWAZA_MARKINGS_ENABLED must be true or false")
-    return load_provider(
-        enabled=enabled in {"true", "1"},
-        provider=env.get(
-            "KAMIWAZA_MARKINGS_PROVIDER", "kamiwaza_confidentiality:create_provider"
-        ),
-        profile=env.get("KAMIWAZA_MARKINGS_PROFILE") or None,
+    provider_spec = env.get(
+        "KAMIWAZA_MARKINGS_PROVIDER", "kamiwaza_confidentiality:create_provider"
     )
+    profile = env.get("KAMIWAZA_MARKINGS_PROFILE")
+    # An empty value is treated as unset: deployment templates render it empty
+    # to clear an earlier value. Say which profile that selected.
+    empty_profile = profile == ""
+    instance = load_provider(
+        enabled=enabled in {"true", "1"},
+        provider=provider_spec,
+        profile=profile or None,
+    )
+    if instance is not None and empty_profile:
+        _LOGGER.warning(
+            "KAMIWAZA_MARKINGS_PROFILE is set but empty; provider %s is using "
+            "its default profile %r (revision %r)",
+            provider_spec,
+            instance.profile.id,
+            instance.profile.revision,
+        )
+    return instance
