@@ -1,0 +1,24 @@
+contract_version: 1
+id: commercial
+revision: "1"
+levels:
+  - id: public
+    name: Public
+    rank: 0
+    aliases: []
+    background_color: '#15803d'
+    foreground_color: '#ffffff'
+  - id: private
+    name: Company Private
+    rank: 1
+    aliases: [Private]
+    background_color: '#1d4ed8'
+    foreground_color: '#ffffff'
+  - id: confidential
+    name: Company Confidential
+    rank: 2
+    aliases: [Confidential]
+    background_color: '#b91c1c'
+    foreground_color: '#ffffff'
+defaults: {}
+identity: {}
